@@ -107,6 +107,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "media"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rtp",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -162,6 +173,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pjsua"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "media",
+ "rtp",
+ "sdp",
+ "sip-core",
+ "sip-transaction",
+ "sip-transport",
+ "sip-ua",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -189,10 +217,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "rust-phone"
 version = "0.1.0"
 dependencies = [
+ "pjsua",
  "sip-core",
+ "sip-ua",
  "tokio",
  "tracing",
  "tracing-subscriber",

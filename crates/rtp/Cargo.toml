@@ -1,0 +1,12 @@
+[package]
+name = "rtp"
+version = "0.1.0"
+edition = "2024"
+description = "RTP (RFC 3550) packets, serialization, and JitterBuffer in Rust"
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

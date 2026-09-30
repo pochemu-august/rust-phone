@@ -405,6 +405,10 @@ impl Headers {
         self.headers.push(header);
     }
 
+    pub fn insert(&mut self, index: usize, header: Header) {
+        self.headers.insert(index, header);
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, Header> {
         self.headers.iter()
     }

@@ -127,6 +127,73 @@ impl Dialog {
         })
     }
 
+    /// Creates a UAS Dialog from an incoming INVITE request and local tag (RFC 3261 12.1.1)
+    pub fn create_uas(req: &Request, local_tag: impl Into<String>) -> Result<Self> {
+        let call_id = req
+            .headers
+            .call_id()
+            .ok_or(UaError::MissingHeader("Call-ID"))?
+            .to_string();
+
+        let remote_tag = req
+            .headers
+            .from()
+            .and_then(|f| f.tag())
+            .ok_or(UaError::MissingHeader("From tag"))?
+            .to_string();
+
+        let local_tag = local_tag.into();
+
+        let remote_cseq = req.headers.cseq().map(|c| c.seq);
+
+        let mut local_uri = req
+            .headers
+            .to()
+            .cloned()
+            .ok_or(UaError::MissingHeader("To"))?;
+        // Set local tag on To header
+        local_uri
+            .parameters
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("tag"));
+        local_uri
+            .parameters
+            .push(("tag".to_string(), Some(local_tag.clone())));
+
+        let remote_uri = req
+            .headers
+            .from()
+            .cloned()
+            .ok_or(UaError::MissingHeader("From"))?;
+
+        let remote_target = req
+            .headers
+            .first_contact()
+            .map(|c| c.uri.clone())
+            .ok_or(UaError::MissingHeader("Contact"))?;
+
+        // Route set from Record-Route headers (for UAS, keep original order RFC 3261 12.1.1)
+        let route_set: Vec<NameAddr> = req
+            .headers
+            .iter()
+            .filter_map(|h| match h {
+                Header::RecordRoute(rr) => Some(rr.clone()),
+                _ => None,
+            })
+            .collect();
+
+        Ok(Self {
+            id: DialogId::new(call_id, local_tag, remote_tag),
+            state: DialogState::Confirmed,
+            local_cseq: 0,
+            remote_cseq,
+            local_uri,
+            remote_uri,
+            remote_target,
+            route_set,
+            secure: false,
+        })
+    }
+
     /// Formats an in-dialog request (e.g. BYE, re-INVITE, INFO)
     pub fn create_request(&mut self, method: Method) -> Request {
         self.local_cseq += 1;

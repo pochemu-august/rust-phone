@@ -17,6 +17,7 @@ pub struct TransactionManager {
     timers: SipTimers,
     client_txs: Arc<Mutex<HashMap<TransactionKey, Arc<ClientTransaction>>>>,
     server_txs: Arc<Mutex<HashMap<TransactionKey, Arc<ServerTransaction>>>>,
+    ack_dispatcher: Arc<Mutex<Option<mpsc::Sender<Request>>>>,
 }
 
 impl TransactionManager {
@@ -28,12 +29,14 @@ impl TransactionManager {
     ) -> Arc<Self> {
         let client_txs = Arc::new(Mutex::new(HashMap::new()));
         let server_txs = Arc::new(Mutex::new(HashMap::new()));
+        let ack_dispatcher = Arc::new(Mutex::new(None));
 
         let mgr = Arc::new(Self {
             transport,
             timers,
             client_txs: Arc::clone(&client_txs),
             server_txs: Arc::clone(&server_txs),
+            ack_dispatcher,
         });
 
         // Spawn central dispatch loop
@@ -58,6 +61,10 @@ impl TransactionManager {
 
     pub fn transport(&self) -> &Arc<TransportManager> {
         &self.transport
+    }
+
+    pub async fn set_ack_dispatcher(&self, dispatcher: mpsc::Sender<Request>) {
+        *self.ack_dispatcher.lock().await = Some(dispatcher);
     }
 
     pub async fn send_request(
@@ -183,6 +190,9 @@ impl TransactionManager {
                     "Received ACK without existing non-2xx server transaction, branch: {}",
                     branch
                 );
+                if let Some(ref disp) = *self.ack_dispatcher.lock().await {
+                    let _ = disp.send(req).await;
+                }
                 return;
             }
 

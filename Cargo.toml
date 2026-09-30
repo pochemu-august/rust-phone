@@ -7,6 +7,9 @@ members = [
     "crates/sip-transport",
     "crates/sip-transaction",
     "crates/sip-ua",
+    "crates/rtp",
+    "crates/media",
+    "crates/pjsua",
 ]
 
 [workspace.dependencies]
@@ -21,6 +24,9 @@ sdp = { path = "crates/sdp" }
 sip-transport = { path = "crates/sip-transport" }
 sip-transaction = { path = "crates/sip-transaction" }
 sip-ua = { path = "crates/sip-ua" }
+rtp = { path = "crates/rtp" }
+media = { path = "crates/media" }
+pjsua = { path = "crates/pjsua" }
 
 [package]
 name = "rust-phone"
@@ -29,6 +35,8 @@ edition = "2024"
 
 [dependencies]
 sip-core = { path = "crates/sip-core" }
+sip-ua = { workspace = true }
+pjsua = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
