@@ -120,4 +120,25 @@ impl Call {
             Err(PjsuaError::Media("No active media session".to_string()))
         }
     }
+
+    pub async fn start_hardware_audio(&self) {
+        let mut lock = self.media_session.lock().await;
+        if let Some(ms) = lock.as_mut() {
+            ms.start_hardware_audio();
+        }
+    }
+
+    pub async fn mute_mic(&self, muted: bool) {
+        let lock = self.media_session.lock().await;
+        if let Some(ms) = lock.as_ref() {
+            ms.mute_mic(muted);
+        }
+    }
+
+    pub async fn mute_speaker(&self, muted: bool) {
+        let lock = self.media_session.lock().await;
+        if let Some(ms) = lock.as_ref() {
+            ms.mute_speaker(muted);
+        }
+    }
 }

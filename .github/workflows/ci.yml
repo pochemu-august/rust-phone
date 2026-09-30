@@ -1,0 +1,48 @@
+name: CI - Rust-Phone Verification
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check-and-test:
+    name: Check, Lint & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: 1. Code Style Check (cargo fmt)
+        run: cargo fmt --all -- --check
+
+      - name: 2. Compilation Check (cargo check)
+        run: cargo check --workspace --all-targets
+
+      - name: 3. Logic & Static Analysis (cargo clippy)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: 4. Test Suite (cargo test)
+        run: cargo test --workspace --verbose
+
+      - name: 5. Verify Softphone Demo Binary
+        run: cargo run --bin rust-phone

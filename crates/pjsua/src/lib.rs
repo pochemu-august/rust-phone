@@ -13,6 +13,7 @@ pub use config::EndpointConfig;
 pub use endpoint::Endpoint;
 pub use error::{PjsuaError, Result};
 pub use event::{CallState, PjsuaEvent};
+pub use media::device::{AudioDeviceInfo, list_audio_devices};
 pub use media_session::{AudioCodecType, MediaSession};
 
 pub mod prelude {
@@ -23,6 +24,7 @@ pub mod prelude {
     pub use crate::error::{PjsuaError, Result};
     pub use crate::event::{CallState, PjsuaEvent};
     pub use crate::media_session::{AudioCodecType, MediaSession};
+    pub use media::device::{AudioDeviceInfo, list_audio_devices};
     pub use sip_core::prelude::*;
     pub use sip_ua::{AccountConfig, RegistrationState};
 }
