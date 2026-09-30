@@ -10,6 +10,7 @@ members = [
     "crates/rtp",
     "crates/media",
     "crates/pjsua",
+    "src-tauri",
 ]
 
 [workspace.dependencies]
@@ -17,7 +18,7 @@ thiserror = "2.0"
 bytes = "1.10"
 tokio = { version = "1.43", features = ["full"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 md-5 = "0.10"
 cpal = "0.15"
 sip-core = { path = "crates/sip-core" }

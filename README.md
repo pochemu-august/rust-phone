@@ -94,14 +94,20 @@ Ensure you have Rust 1.85+ installed (Rust 2024 edition supported):
 rustup update stable
 ```
 
-### Clone and Run Demo
+### Quick Start
 
 ```bash
 git clone https://github.com/augustuz/rust-phone.git
 cd rust-phone
 
-# Run the automated self-test demo
+# 1. Run the headless automated self-test demo
 cargo run
+
+# 2. Launch the Desktop Softphone with live session logging & Asterisk log hooks:
+.\run_phone.bat
+
+# 3. Run automated verification (formatting, clippy, test suite):
+.\run_checks.bat
 ```
 
 ### Output:
@@ -176,15 +182,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 This project adheres to strict automated code health standards. Every pull request and build is verified using:
 
 ```bash
-# Windows
-.\scripts\run_checks.bat
+# Windows (One-Click Automated Suite)
+.\run_checks.bat
 
-# Linux / macOS / PowerShell
+# Linux / macOS / Manual
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+### 📁 Structured Logging System (`logs/`)
+
+All operations produce structured, timestamped logs for debugging and telemetry:
+- `logs/checks/`: Code quality reports (style, compilation, 0-warning clippy audits, and unit tests).
+- `logs/app/`: Softphone runtime session logs (SIP transactions, media negotiation, hardware audio devices).
+- `logs/asterisk/`: Server-side Asterisk PBX logs attached during/after test sessions (via file path or clipboard capture).
+
 
 Continuous Integration is automatically run across **Ubuntu**, **Windows**, and **macOS** via GitHub Actions.
 
