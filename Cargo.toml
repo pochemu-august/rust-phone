@@ -6,6 +6,7 @@ members = [
     "crates/sdp",
     "crates/sip-transport",
     "crates/sip-transaction",
+    "crates/sip-ua",
 ]
 
 [workspace.dependencies]
@@ -14,10 +15,12 @@ bytes = "1.10"
 tokio = { version = "1.43", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+md-5 = "0.10"
 sip-core = { path = "crates/sip-core" }
 sdp = { path = "crates/sdp" }
 sip-transport = { path = "crates/sip-transport" }
 sip-transaction = { path = "crates/sip-transaction" }
+sip-ua = { path = "crates/sip-ua" }
 
 [package]
 name = "rust-phone"

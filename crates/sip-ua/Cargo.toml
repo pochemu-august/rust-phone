@@ -1,0 +1,18 @@
+[package]
+name = "sip-ua"
+version = "0.1.0"
+edition = "2024"
+description = "SIP User Agent, Dialogs, Registration client, and Digest Authentication"
+
+[dependencies]
+sip-core = { workspace = true }
+sip-transport = { workspace = true }
+sip-transaction = { workspace = true }
+sdp = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+md-5 = { workspace = true }
+
+[dev-dependencies]

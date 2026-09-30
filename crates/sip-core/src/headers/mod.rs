@@ -437,6 +437,22 @@ impl Headers {
         })
     }
 
+    pub fn set_to(&mut self, to: NameAddr) {
+        if let Some(pos) = self.headers.iter().position(|h| matches!(h, Header::To(_))) {
+            self.headers[pos] = Header::To(to);
+        } else {
+            self.headers.push(Header::To(to));
+        }
+    }
+
+    pub fn set_to_tag(&mut self, tag: impl Into<String>) {
+        if let Some(Header::To(to)) = self.headers.iter_mut().find(|h| matches!(h, Header::To(_))) {
+            to.parameters
+                .retain(|(k, _)| !k.eq_ignore_ascii_case("tag"));
+            to.parameters.push(("tag".to_string(), Some(tag.into())));
+        }
+    }
+
     pub fn call_id(&self) -> Option<&str> {
         self.headers.iter().find_map(|h| match h {
             Header::CallId(c) => Some(c.as_str()),
