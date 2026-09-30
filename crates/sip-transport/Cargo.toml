@@ -1,0 +1,14 @@
+[package]
+name = "sip-transport"
+version = "0.1.0"
+edition = "2024"
+description = "Async SIP transport layer (UDP and TCP) on tokio"
+
+[dependencies]
+sip-core = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]

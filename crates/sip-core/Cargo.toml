@@ -1,0 +1,11 @@
+[package]
+name = "sip-core"
+version = "0.1.0"
+edition = "2024"
+description = "Core SIP (RFC 3261) URI, headers, messages parser and serializer in Rust"
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

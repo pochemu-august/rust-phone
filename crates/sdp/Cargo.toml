@@ -1,0 +1,10 @@
+[package]
+name = "sdp"
+version = "0.1.0"
+edition = "2024"
+description = "SDP (RFC 4566) parser, serializer, and RFC 3264 Offer/Answer negotiator in Rust"
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]

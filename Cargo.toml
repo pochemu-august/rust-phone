@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    ".",
+    "crates/sip-core",
+    "crates/sdp",
+    "crates/sip-transport",
+    "crates/sip-transaction",
+]
+
+[workspace.dependencies]
+thiserror = "2.0"
+bytes = "1.10"
+tokio = { version = "1.43", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+sip-core = { path = "crates/sip-core" }
+sdp = { path = "crates/sdp" }
+sip-transport = { path = "crates/sip-transport" }
+sip-transaction = { path = "crates/sip-transaction" }
+
+[package]
+name = "rust-phone"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sip-core = { path = "crates/sip-core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

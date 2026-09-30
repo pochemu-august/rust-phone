@@ -1,0 +1,15 @@
+[package]
+name = "sip-transaction"
+version = "0.1.0"
+edition = "2024"
+description = "RFC 3261 SIP Transaction Layer state machines and timers"
+
+[dependencies]
+sip-core = { workspace = true }
+sip-transport = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
