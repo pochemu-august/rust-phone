@@ -14,13 +14,13 @@ pub enum CallState {
 impl std::fmt::Display for CallState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CallState::Null => write!(f, "NULL"),
-            CallState::Calling => write!(f, "CALLING"),
-            CallState::Incoming => write!(f, "INCOMING"),
-            CallState::Early => write!(f, "EARLY (Ringing)"),
-            CallState::Connecting => write!(f, "CONNECTING"),
-            CallState::Confirmed => write!(f, "CONFIRMED (Active)"),
-            CallState::Disconnected => write!(f, "DISCONNECTED"),
+            CallState::Null => write!(f, "Null"),
+            CallState::Calling => write!(f, "Calling"),
+            CallState::Incoming => write!(f, "Incoming"),
+            CallState::Early => write!(f, "Early"),
+            CallState::Connecting => write!(f, "Connecting"),
+            CallState::Confirmed => write!(f, "Confirmed"),
+            CallState::Disconnected => write!(f, "Disconnected"),
         }
     }
 }

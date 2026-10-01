@@ -20,7 +20,7 @@ pub struct MediaSession {
     stream: Arc<Mutex<RtpAudioStream>>,
     local_addr: SocketAddr,
     codec: AudioCodecType,
-    remote_addr: Option<SocketAddr>,
+    remote_addr: Arc<std::sync::Mutex<Option<SocketAddr>>>,
     playback_queue: Arc<std::sync::Mutex<Vec<i16>>>,
     audio_io: Option<AudioIOHandle>,
 }
@@ -37,7 +37,7 @@ impl MediaSession {
             stream: Arc::new(Mutex::new(stream)),
             local_addr,
             codec,
-            remote_addr: None,
+            remote_addr: Arc::new(std::sync::Mutex::new(None)),
             playback_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             audio_io: None,
         })
@@ -48,43 +48,73 @@ impl MediaSession {
     }
 
     pub fn set_remote_addr(&mut self, addr: SocketAddr) {
-        self.remote_addr = Some(addr);
+        if let Ok(mut lock) = self.remote_addr.lock() {
+            *lock = Some(addr);
+        }
     }
 
     pub fn remote_addr(&self) -> Option<SocketAddr> {
-        self.remote_addr
+        self.remote_addr.lock().ok().and_then(|g| *g)
     }
 
-    pub fn start_hardware_audio(&mut self) {
+    pub fn flush_playback_queue(&self) {
+        if let Ok(mut lock) = self.playback_queue.lock() {
+            lock.clear();
+        }
+    }
+
+    pub async fn start_hardware_audio(&mut self) {
+        if self.audio_io.is_some() {
+            return;
+        }
+
+        let (mic_tx, mut mic_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
+
+        let on_mic = move |chunk: Vec<i16>| {
+            let _ = mic_tx.try_send(chunk);
+        };
+
         let stream_clone = Arc::clone(&self.stream);
-        let remote_addr_opt = self.remote_addr;
+        let remote_addr_ref = Arc::clone(&self.remote_addr);
         let pt = match self.codec {
             AudioCodecType::Pcmu => 0,
             AudioCodecType::Pcma => 8,
         };
 
-        let queue = Arc::clone(&self.playback_queue);
-
-        let on_mic = move |chunk: Vec<i16>| {
-            if let Some(target) = remote_addr_opt {
-                let frame = AudioFrame::new_mono(8000, chunk);
-                let st = Arc::clone(&stream_clone);
-                tokio::spawn(async move {
-                    let _ = st.lock().await.send_frame(&frame, pt, target).await;
-                });
+        tokio::spawn(async move {
+            while let Some(chunk) = mic_rx.recv().await {
+                let target_opt = remote_addr_ref.lock().ok().and_then(|g| *g);
+                if let Some(target) = target_opt {
+                    let frame = AudioFrame::new_mono(8000, chunk);
+                    let _ = stream_clone
+                        .lock()
+                        .await
+                        .send_frame(&frame, pt, target)
+                        .await;
+                }
             }
-        };
+        });
 
+        let queue = Arc::clone(&self.playback_queue);
         match media::device::start_audio_io(on_mic, queue) {
             Ok(handle) => {
                 self.audio_io = Some(handle);
 
                 let recv_stream = Arc::clone(&self.stream);
                 let recv_queue = Arc::clone(&self.playback_queue);
+                let notify = self.stream.lock().await.notify_handle();
                 tokio::spawn(async move {
-                    while let Some(frame) = recv_stream.lock().await.pop_frame().await {
-                        if let Ok(mut lock) = recv_queue.lock() {
-                            lock.extend_from_slice(&frame.samples);
+                    loop {
+                        let maybe_frame = {
+                            let stream = recv_stream.lock().await;
+                            stream.pop_frame().await
+                        };
+                        if let Some(frame) = maybe_frame {
+                            if let Ok(mut lock) = recv_queue.lock() {
+                                lock.extend_from_slice(&frame.samples);
+                            }
+                        } else {
+                            notify.notified().await;
                         }
                     }
                 });
@@ -109,7 +139,7 @@ impl MediaSession {
 
     pub async fn send_pcm_samples(&self, samples: &[i16]) -> Result<()> {
         let remote_addr = self
-            .remote_addr
+            .remote_addr()
             .ok_or_else(|| PjsuaError::Media("Remote RTP address not established".to_string()))?;
 
         let pt = match self.codec {
@@ -135,7 +165,7 @@ impl MediaSession {
 
     pub async fn send_dtmf(&self, digit: char) -> Result<()> {
         let remote_addr = self
-            .remote_addr
+            .remote_addr()
             .ok_or_else(|| PjsuaError::Media("Remote RTP address not established".to_string()))?;
 
         let pt = match self.codec {

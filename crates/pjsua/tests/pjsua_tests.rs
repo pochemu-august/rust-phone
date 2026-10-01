@@ -114,9 +114,11 @@ async fn test_pjsua_call_and_media_flow() {
     let bob_call = bob_ep.get_call(&call_id).await.unwrap();
     assert_eq!(alice_call.state().await, CallState::Confirmed);
 
-    // 8. RTP Media exchange: Alice sends audio to Bob
+    // 8. RTP Media exchange: Alice sends audio to Bob (send 3 frames for 3-packet prebuffer)
     let pcm_samples: Vec<i16> = (0..160).map(|i| (i * 100) as i16).collect();
-    alice_call.send_audio(&pcm_samples).await.unwrap();
+    for _ in 0..3 {
+        alice_call.send_audio(&pcm_samples).await.unwrap();
+    }
 
     // Receive audio on Bob's side
     let recv_audio = timeout(Duration::from_secs(3), async {

@@ -23,18 +23,11 @@ pub fn run() {
             hangup_call,
             send_dtmf,
             set_mute,
+            set_speaker_mute,
+            set_hold,
             get_audio_devices,
         ])
-        .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
-            Ok(())
-        })
+        .setup(|_app| Ok(()))
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
 }

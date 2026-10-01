@@ -24,6 +24,8 @@ pub struct Call {
     media_session: Arc<Mutex<Option<MediaSession>>>,
     local_sdp: Arc<Mutex<Option<SessionDescription>>>,
     remote_sdp: Arc<Mutex<Option<SessionDescription>>>,
+    local_hold: Arc<Mutex<bool>>,
+    remote_hold: Arc<Mutex<bool>>,
 }
 
 impl Call {
@@ -44,6 +46,8 @@ impl Call {
             media_session: Arc::new(Mutex::new(None)),
             local_sdp: Arc::new(Mutex::new(None)),
             remote_sdp: Arc::new(Mutex::new(None)),
+            local_hold: Arc::new(Mutex::new(false)),
+            remote_hold: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -57,6 +61,14 @@ impl Call {
 
     pub async fn set_state(&self, new_state: CallState) {
         *self.state.lock().await = new_state;
+    }
+
+    pub async fn is_local_hold(&self) -> bool {
+        *self.local_hold.lock().await
+    }
+
+    pub async fn set_local_hold(&self, hold: bool) {
+        *self.local_hold.lock().await = hold;
     }
 
     pub async fn set_dialog(&self, dialog: Dialog) {
@@ -124,7 +136,14 @@ impl Call {
     pub async fn start_hardware_audio(&self) {
         let mut lock = self.media_session.lock().await;
         if let Some(ms) = lock.as_mut() {
-            ms.start_hardware_audio();
+            ms.start_hardware_audio().await;
+        }
+    }
+
+    pub async fn flush_playback_queue(&self) {
+        let lock = self.media_session.lock().await;
+        if let Some(ms) = lock.as_ref() {
+            ms.flush_playback_queue();
         }
     }
 
@@ -139,6 +158,36 @@ impl Call {
         let lock = self.media_session.lock().await;
         if let Some(ms) = lock.as_ref() {
             ms.mute_speaker(muted);
+        }
+    }
+
+    pub async fn is_remote_hold(&self) -> bool {
+        *self.remote_hold.lock().await
+    }
+
+    pub async fn set_remote_hold(&self, hold: bool) {
+        *self.remote_hold.lock().await = hold;
+    }
+
+    /// Synchronizes hardware audio routing based on local vs remote hold states (matching MicroSIP logic):
+    /// - Local Hold: Mute mic (stop transmitting) & mute speaker (local user hears no MoH)
+    /// - Remote Hold: Mute mic, but unmute speaker so local user hears PBX Music On Hold
+    /// - Active (No Hold): Unmute both mic and speaker
+    pub async fn update_audio_hold_state(&self) {
+        let local_hold = *self.local_hold.lock().await;
+        let remote_hold = *self.remote_hold.lock().await;
+
+        if local_hold {
+            self.mute_mic(true).await;
+            self.mute_speaker(true).await;
+            self.flush_playback_queue().await;
+        } else if remote_hold {
+            self.mute_mic(true).await;
+            self.mute_speaker(false).await;
+        } else {
+            self.mute_mic(false).await;
+            self.mute_speaker(false).await;
+            self.flush_playback_queue().await;
         }
     }
 }

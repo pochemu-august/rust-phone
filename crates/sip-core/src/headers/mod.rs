@@ -409,6 +409,13 @@ impl Headers {
         self.headers.insert(index, header);
     }
 
+    pub fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&Header) -> bool,
+    {
+        self.headers.retain(f);
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, Header> {
         self.headers.iter()
     }

@@ -257,7 +257,6 @@ pub async fn answer_call(
         .map_err(|e| e.to_string())?;
 
     if let Some(call) = ep.get_call(&call_id).await {
-        call.start_hardware_audio().await;
         state.active_calls.lock().await.insert(call_id, call);
     }
 
@@ -300,6 +299,31 @@ pub async fn set_mute(
     let calls = state.active_calls.lock().await;
     let call = calls.get(&call_id).ok_or("Call not active")?;
     call.mute_mic(mute_mic).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_speaker_mute(
+    state: State<'_, AppState>,
+    call_id: String,
+    mute_speaker: bool,
+) -> CmdResult<()> {
+    let calls = state.active_calls.lock().await;
+    let call = calls.get(&call_id).ok_or("Call not active")?;
+    call.mute_speaker(mute_speaker).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_hold(state: State<'_, AppState>, call_id: String, hold: bool) -> CmdResult<()> {
+    let ep = {
+        let lock = state.endpoint.lock().await;
+        lock.clone().ok_or("SIP stack not initialized")?
+    };
+
+    ep.set_call_hold(&call_id, hold)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

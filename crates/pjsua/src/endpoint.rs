@@ -18,7 +18,10 @@ use crate::config::EndpointConfig;
 use crate::error::{PjsuaError, Result};
 use crate::event::{CallState, PjsuaEvent};
 use crate::media_session::{AudioCodecType, MediaSession};
-use crate::sdp_helper::{create_audio_answer, create_audio_offer, extract_media_socket_addr};
+use crate::sdp_helper::{
+    create_audio_answer, create_audio_direction_answer, create_audio_hold_offer,
+    create_audio_offer, extract_media_socket_addr, is_sdp_hold,
+};
 
 pub struct Endpoint {
     config: EndpointConfig,
@@ -146,24 +149,63 @@ impl Endpoint {
             .await
             .ok_or(PjsuaError::AccountNotFound(acc_id))?;
 
-        let dst_uri = parse_uri(dst_uri_str)?;
+        let acc_cfg = account.config();
+
+        // Expand short dial (e.g. "999" -> "sip:999@192.168.0.103")
+        let full_uri_str = if !dst_uri_str.starts_with("sip:") && !dst_uri_str.starts_with("sips:")
+        {
+            if dst_uri_str.contains('@') {
+                format!("sip:{}", dst_uri_str)
+            } else {
+                format!("sip:{}@{}", dst_uri_str, acc_cfg.domain)
+            }
+        } else {
+            dst_uri_str.to_string()
+        };
+
+        let dst_uri = parse_uri(&full_uri_str)?;
         let call_id = format!("call-{}", rand_u32());
         let local_tag = format!("tag-{}", rand_u32());
 
-        // Allocate RTP port & create local MediaSession
+        // Resolve destination socket address:
+        // If explicit port is given (e.g. peer-to-peer test "sip:bob@127.0.0.1:58492"), use it.
+        // If dialing an extension within the PBX domain, route to PBX registrar.
+        let target: SocketAddr = match &dst_uri {
+            Uri::Sip(s) => {
+                if let Some(port) = s.port {
+                    if let Ok(ip) = s.host.parse::<std::net::IpAddr>() {
+                        SocketAddr::new(ip, port)
+                    } else {
+                        acc_cfg.registrar_addr
+                    }
+                } else if s.host == acc_cfg.domain || s.host.parse::<std::net::IpAddr>().is_err() {
+                    acc_cfg.registrar_addr
+                } else if let Ok(ip) = s.host.parse::<std::net::IpAddr>() {
+                    SocketAddr::new(ip, 5060)
+                } else {
+                    acc_cfg.registrar_addr
+                }
+            }
+            _ => acc_cfg.registrar_addr,
+        };
+
+        let local_media_ip = find_local_ip_for(target);
+
+        // Allocate RTP port & create local MediaSession (bound to 0.0.0.0 to receive on all interfaces)
         let local_rtp_port = self.next_rtp_port();
-        let rtp_bind_addr = SocketAddr::new(self.config.rtp_bind_ip, local_rtp_port);
+        let rtp_bind_addr = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            local_rtp_port,
+        );
         let media_session = MediaSession::create(rtp_bind_addr, AudioCodecType::Pcmu).await?;
 
-        // Generate SDP offer
-        let sdp_offer = create_audio_offer(self.config.rtp_bind_ip, local_rtp_port, rand_u64());
+        // Generate SDP offer with real routable LAN IP so Asterisk streams RTP back to us!
+        let sdp_offer = create_audio_offer(local_media_ip, local_rtp_port, rand_u64());
         let sdp_str = sdp_offer.to_string();
 
         let mut req = Request::new(Method::Invite, dst_uri.clone());
-        let from_uri = Uri::Sip(
-            SipUri::new(account.config().domain.clone())
-                .with_user(account.config().username.clone()),
-        );
+        let from_uri =
+            Uri::Sip(SipUri::new(acc_cfg.domain.clone()).with_user(acc_cfg.username.clone()));
         let from_na = NameAddr::new(from_uri).with_param("tag", Some(local_tag));
         let to_na = NameAddr::new(dst_uri.clone());
 
@@ -175,8 +217,7 @@ impl Endpoint {
         req.headers.push(Header::MaxForwards(70));
 
         let local_contact = Uri::Sip(
-            SipUri::new(self.transport.local_addr().ip().to_string())
-                .with_port(self.transport.local_addr().port()),
+            SipUri::new(local_media_ip.to_string()).with_port(self.transport.local_addr().port()),
         );
         req.headers
             .push(Header::Contact(NameAddr::new(local_contact)));
@@ -205,27 +246,24 @@ impl Endpoint {
             .await
             .insert(call_id.clone(), Arc::clone(&call));
 
-        // Resolve destination socket address
-        let target_host = match &dst_uri {
-            Uri::Sip(s) => s.host.clone(),
-            _ => "127.0.0.1".to_string(),
-        };
-        let target_port = match &dst_uri {
-            Uri::Sip(s) => s.port.unwrap_or(5060),
-            _ => 5060,
-        };
-        let target: SocketAddr =
-            format!("{}:{}", target_host, target_port)
-                .parse()
-                .map_err(|_| {
-                    PjsuaError::InvalidDestination(format!("{}:{}", target_host, target_port))
-                })?;
+        let _ = self.event_tx.send(PjsuaEvent::CallStateChanged {
+            call_id: call_id.clone(),
+            state: CallState::Calling,
+            status_code: 0,
+            reason: "Calling".to_string(),
+        });
 
         let mut handle = self.transactions.send_request(req.clone(), target).await?;
         let event_tx = self.event_tx.clone();
         let call_clone = Arc::clone(&call);
         let dialogs_clone = Arc::clone(&self.dialogs);
         let transport_clone = Arc::clone(&self.transport);
+        let transactions_clone = Arc::clone(&self.transactions);
+        let acc_username = acc_cfg.username.clone();
+        let acc_password = acc_cfg.password.clone();
+        let mut req_clone = req;
+        let mut cseq = 1u32;
+        let mut challenged = false;
 
         tokio::spawn(async move {
             while let Some(res) = handle.recv_response().await {
@@ -262,7 +300,7 @@ impl Endpoint {
                     }
 
                     // Create Dialog & Send 2xx ACK
-                    if let Ok(dialog) = Dialog::create_uac(&req, &res) {
+                    if let Ok(dialog) = Dialog::create_uac(&req_clone, &res) {
                         if let Ok(mut ack_req) = dialog.create_ack_for_2xx(&res) {
                             let branch = format!("z9hG4bK-{}", rand_u32());
                             let via = ViaHeader::new(
@@ -286,6 +324,72 @@ impl Endpoint {
                     let _ = event_tx.send(PjsuaEvent::CallStateChanged {
                         call_id: call_id.clone(),
                         state: CallState::Confirmed,
+                        status_code: res.status_code,
+                        reason: res.reason_phrase.clone(),
+                    });
+                    break;
+                } else if (res.status_code == 401 || res.status_code == 407) && !challenged {
+                    challenged = true;
+                    let auth_challenge = res.headers.iter().find_map(|h| match h {
+                        Header::WwwAuthenticate(a) | Header::ProxyAuthenticate(a) => {
+                            Some(a.clone())
+                        }
+                        _ => None,
+                    });
+
+                    if let Some(challenge) = auth_challenge {
+                        tracing::info!(
+                            "Call {} challenged with {}, computing digest auth...",
+                            call_id,
+                            res.status_code
+                        );
+                        let auth_resp = create_auth_response(
+                            &challenge,
+                            &acc_username,
+                            &acc_password,
+                            "INVITE",
+                            &dst_uri.to_string(),
+                        );
+
+                        cseq += 1;
+                        req_clone.headers.retain(|h| {
+                            !matches!(
+                                h,
+                                Header::CSeq(_)
+                                    | Header::Authorization(_)
+                                    | Header::ProxyAuthorization(_)
+                            )
+                        });
+                        req_clone
+                            .headers
+                            .push(Header::CSeq(CSeqHeader::new(cseq, Method::Invite)));
+
+                        if res.status_code == 401 {
+                            req_clone.headers.push(Header::Authorization(auth_resp));
+                        } else {
+                            req_clone
+                                .headers
+                                .push(Header::ProxyAuthorization(auth_resp));
+                        }
+
+                        match transactions_clone
+                            .send_request(req_clone.clone(), target)
+                            .await
+                        {
+                            Ok(new_handle) => {
+                                handle = new_handle;
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to re-send authenticated INVITE: {}", e);
+                            }
+                        }
+                    }
+
+                    call_clone.set_state(CallState::Disconnected).await;
+                    let _ = event_tx.send(PjsuaEvent::CallStateChanged {
+                        call_id: call_id.clone(),
+                        state: CallState::Disconnected,
                         status_code: res.status_code,
                         reason: res.reason_phrase.clone(),
                     });
@@ -322,22 +426,29 @@ impl Endpoint {
             .ok_or_else(|| PjsuaError::CallNotFound(call_id.to_string()))?;
 
         if status_code == 200 {
-            // Bind RTP MediaSession
+            // Allocate local RTP port and determine route to remote peer
             let local_rtp_port = self.next_rtp_port();
-            let rtp_bind_addr = SocketAddr::new(self.config.rtp_bind_ip, local_rtp_port);
-            let mut media_session =
-                MediaSession::create(rtp_bind_addr, AudioCodecType::Pcmu).await?;
-
-            // Generate SDP Answer
             let remote_sdp = call.get_remote_sdp().await;
             let remote_rtp = remote_sdp.as_ref().and_then(extract_media_socket_addr);
+
+            let local_media_ip = if let Some(r_addr) = remote_rtp {
+                find_local_ip_for(r_addr)
+            } else {
+                find_local_ip_for(self.config.sip_bind_addr)
+            };
+
+            let rtp_bind_addr = SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                local_rtp_port,
+            );
+            let mut media_session =
+                MediaSession::create(rtp_bind_addr, AudioCodecType::Pcmu).await?;
 
             if let Some(r_addr) = remote_rtp {
                 media_session.set_remote_addr(r_addr);
             }
 
-            let sdp_ans =
-                create_audio_answer(self.config.rtp_bind_ip, local_rtp_port, rand_u64(), "0");
+            let sdp_ans = create_audio_answer(local_media_ip, local_rtp_port, rand_u64(), "0");
             let sdp_str = sdp_ans.to_string();
 
             let local_tag = format!("tag-{}", rand_u32());
@@ -365,7 +476,7 @@ impl Endpoint {
             }
 
             let local_contact = Uri::Sip(
-                SipUri::new(self.transport.local_addr().ip().to_string())
+                SipUri::new(local_media_ip.to_string())
                     .with_port(self.transport.local_addr().port()),
             );
             res.headers
@@ -479,6 +590,116 @@ impl Endpoint {
         Ok(())
     }
 
+    pub async fn set_call_hold(&self, call_id: &str, hold: bool) -> Result<()> {
+        let call = self
+            .get_call(call_id)
+            .await
+            .ok_or_else(|| PjsuaError::CallNotFound(call_id.to_string()))?;
+
+        call.set_local_hold(hold).await;
+        call.update_audio_hold_state().await;
+
+        if let Some(mut dialog) = call.get_dialog().await {
+            let mut re_invite = dialog.create_request(Method::Invite);
+
+            let local_media_ip = match &dialog.remote_target {
+                Uri::Sip(s) => {
+                    let target: SocketAddr = format!("{}:{}", s.host, s.port.unwrap_or(5060))
+                        .parse()
+                        .unwrap_or(self.transport.local_addr());
+                    find_local_ip_for(target)
+                }
+                _ => find_local_ip_for(self.config.sip_bind_addr),
+            };
+
+            let local_rtp_port = call
+                .get_local_sdp()
+                .await
+                .and_then(|sdp| sdp.medias.first().map(|m| m.port))
+                .unwrap_or_else(|| self.next_rtp_port());
+
+            let sdp_offer =
+                create_audio_hold_offer(local_media_ip, local_rtp_port, rand_u64(), hold);
+            let sdp_str = sdp_offer.to_string();
+
+            let local_contact = Uri::Sip(
+                SipUri::new(local_media_ip.to_string())
+                    .with_port(self.transport.local_addr().port()),
+            );
+            re_invite
+                .headers
+                .push(Header::Contact(NameAddr::new(local_contact)));
+            re_invite
+                .headers
+                .push(Header::ContentType("application/sdp".to_string()));
+            re_invite.headers.push(Header::Generic(
+                "User-Agent".to_string(),
+                self.config.user_agent.clone(),
+            ));
+            re_invite.body = sdp_str.into_bytes();
+            re_invite
+                .headers
+                .retain(|h| !matches!(h, Header::ContentLength(_)));
+            re_invite
+                .headers
+                .push(Header::ContentLength(re_invite.body.len()));
+
+            let target: SocketAddr = match &dialog.remote_target {
+                Uri::Sip(s) => format!("{}:{}", s.host, s.port.unwrap_or(5060))
+                    .parse()
+                    .unwrap_or(self.transport.local_addr()),
+                _ => self.transport.local_addr(),
+            };
+
+            let mut handle = self.transactions.send_request(re_invite, target).await?;
+
+            let call_clone = Arc::clone(&call);
+            let dialogs_clone = Arc::clone(&self.dialogs);
+            let transport_clone = Arc::clone(&self.transport);
+
+            tokio::spawn(async move {
+                while let Some(res) = handle.recv_response().await {
+                    if (200..300).contains(&res.status_code) {
+                        // 2xx response to re-INVITE: send ACK with Via header
+                        if let Ok(mut ack_req) = dialog.create_ack_for_2xx(&res) {
+                            let branch = format!("z9hG4bK-{}", rand_u32());
+                            let via = ViaHeader::new(
+                                "SIP/2.0/UDP",
+                                transport_clone.local_addr().ip().to_string(),
+                                Some(transport_clone.local_addr().port()),
+                            )
+                            .with_branch(branch);
+                            ack_req.headers.insert(0, Header::Via(via));
+
+                            let _ = transport_clone
+                                .send_to(&SipMessage::Request(ack_req), target)
+                                .await;
+                        }
+
+                        // Parse SDP answer if present
+                        if !res.body.is_empty()
+                            && let Ok(body_str) = std::str::from_utf8(&res.body)
+                            && let Ok(sdp) = SessionDescription::from_str(body_str)
+                        {
+                            call_clone.set_remote_sdp(sdp.clone()).await;
+                            if let Some(r_addr) = extract_media_socket_addr(&sdp) {
+                                call_clone.set_remote_rtp_addr(r_addr).await;
+                            }
+                        }
+
+                        dialogs_clone.insert(dialog.clone()).await;
+                        call_clone.set_dialog(dialog).await;
+                        break;
+                    } else if res.status_code >= 300 {
+                        break;
+                    }
+                }
+            });
+        }
+
+        Ok(())
+    }
+
     async fn handle_incoming_server_tx(&self, server_tx: Arc<ServerTransaction>) {
         let req = &server_tx.request;
         match req.method {
@@ -487,6 +708,91 @@ impl Endpoint {
                     Some(cid) => cid.to_string(),
                     None => return,
                 };
+
+                // Check if this is an in-dialog re-INVITE on an existing call
+                if let Some(existing_call) = self.calls.lock().await.get(&call_id).cloned() {
+                    let remote_sdp_opt = if !req.body.is_empty()
+                        && let Ok(body_str) = std::str::from_utf8(&req.body)
+                        && let Ok(sdp) = SessionDescription::from_str(body_str)
+                    {
+                        existing_call.set_remote_sdp(sdp.clone()).await;
+                        if let Some(r_addr) = extract_media_socket_addr(&sdp) {
+                            existing_call.set_remote_rtp_addr(r_addr).await;
+                        }
+                        Some(sdp)
+                    } else {
+                        None
+                    };
+
+                    let is_peer_hold = remote_sdp_opt.as_ref().map(is_sdp_hold).unwrap_or(false);
+                    existing_call.set_remote_hold(is_peer_hold).await;
+                    existing_call.update_audio_hold_state().await;
+
+                    let mut res = Response::new(200, "OK");
+                    if let Some(via) = req.headers.first_via() {
+                        res.headers.push(Header::Via(via.clone()));
+                    }
+                    if let Some(from) = req.headers.from() {
+                        res.headers.push(Header::From(from.clone()));
+                    }
+                    if let Some(to) = req.headers.to() {
+                        res.headers.push(Header::To(to.clone()));
+                    }
+                    if let Some(cid) = req.headers.call_id() {
+                        res.headers.push(Header::CallId(cid.to_string()));
+                    }
+                    if let Some(cseq) = req.headers.cseq() {
+                        res.headers.push(Header::CSeq(cseq.clone()));
+                    }
+
+                    let local_media_ip = if let Some(ref r_sdp) = remote_sdp_opt
+                        && let Some(r_addr) = extract_media_socket_addr(r_sdp)
+                    {
+                        find_local_ip_for(r_addr)
+                    } else {
+                        find_local_ip_for(self.config.sip_bind_addr)
+                    };
+
+                    let local_contact = Uri::Sip(
+                        SipUri::new(local_media_ip.to_string())
+                            .with_port(self.transport.local_addr().port()),
+                    );
+                    res.headers
+                        .push(Header::Contact(NameAddr::new(local_contact)));
+                    res.headers.push(Header::Generic(
+                        "User-Agent".to_string(),
+                        self.config.user_agent.clone(),
+                    ));
+
+                    let local_rtp_port = existing_call
+                        .get_local_sdp()
+                        .await
+                        .and_then(|sdp| sdp.medias.first().map(|m| m.port))
+                        .unwrap_or_else(|| self.next_rtp_port());
+
+                    let ans_dir = match (existing_call.is_local_hold().await, is_peer_hold) {
+                        (true, true) => "inactive",
+                        (true, false) => "sendonly",
+                        (false, true) => "recvonly",
+                        (false, false) => "sendrecv",
+                    };
+                    let sdp_ans = create_audio_direction_answer(
+                        local_media_ip,
+                        local_rtp_port,
+                        rand_u64(),
+                        "0",
+                        ans_dir,
+                    );
+                    let sdp_str = sdp_ans.to_string();
+                    res.headers
+                        .push(Header::ContentType("application/sdp".to_string()));
+                    res.body = sdp_str.into_bytes();
+                    res.headers.push(Header::ContentLength(res.body.len()));
+
+                    let _ = server_tx.respond(res).await;
+                    existing_call.set_local_sdp(sdp_ans).await;
+                    return;
+                }
                 let from_str = req
                     .headers
                     .from()
@@ -577,10 +883,15 @@ impl Endpoint {
                 res.headers.push(Header::ContentLength(0));
                 let _ = server_tx.respond(res).await;
 
-                if let Some(cid) = call_id
-                    && let Some(call) = self.calls.lock().await.remove(&cid)
-                {
-                    call.set_state(CallState::Disconnected).await;
+                if let Some(cid) = call_id {
+                    let call_opt = self.calls.lock().await.remove(&cid);
+                    if let Some(call) = call_opt {
+                        call.set_state(CallState::Disconnected).await;
+                        if let Some(dialog) = call.get_dialog().await {
+                            self.dialogs.remove(&dialog.id).await;
+                        }
+                    }
+                    self.server_txs.lock().await.remove(&cid);
                     let _ = self.event_tx.send(PjsuaEvent::CallStateChanged {
                         call_id: cid,
                         state: CallState::Disconnected,
@@ -670,4 +981,15 @@ fn rand_u64() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos() as u64
+}
+
+fn find_local_ip_for(target: SocketAddr) -> std::net::IpAddr {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0")
+        && socket.connect(target).is_ok()
+        && let Ok(local) = socket.local_addr()
+        && !local.ip().is_unspecified()
+    {
+        return local.ip();
+    }
+    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }

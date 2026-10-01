@@ -7,14 +7,15 @@
     "frontendDist": "../ui"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "Rust-Phone | Modern VoIP Softphone",
-        "width": 420,
-        "height": 680,
-        "minWidth": 360,
-        "minHeight": 580,
+        "width": 340,
+        "height": 570,
+        "minWidth": 320,
+        "minHeight": 500,
         "resizable": true,
         "fullscreen": false
       }

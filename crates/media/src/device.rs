@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 
-use crate::resample::resample_pcm;
+use crate::resample::ContinuousResampler;
 
 #[derive(Debug, Clone)]
 pub struct AudioDeviceInfo {
@@ -93,6 +93,8 @@ where
     let mic_buf_clone = Arc::clone(&mic_buffer);
     let mic_cb_clone = Arc::clone(&mic_callback);
 
+    let mut in_resampler = ContinuousResampler::new(in_sample_rate, 8000);
+
     let input_stream = input_device
         .build_input_stream(
             &in_config.into(),
@@ -111,8 +113,8 @@ where
                     mono_pcm.push(s16);
                 }
 
-                // Resample to 8000 Hz telephony rate
-                let resampled_8k = resample_pcm(&mono_pcm, in_sample_rate, 8000);
+                // Continuously resample to 8000 Hz telephony rate with phase preservation
+                let resampled_8k = in_resampler.resample(&mono_pcm);
 
                 let mut lock = mic_buf_clone.lock().unwrap();
                 lock.extend_from_slice(&resampled_8k);
@@ -147,39 +149,69 @@ where
 
     let play_queue_clone = Arc::clone(&playback_queue);
 
+    let mut out_resampler = ContinuousResampler::new(8000, out_sample_rate);
+    let mut is_playing = false;
+    let prebuffer_threshold = 320; // 40ms of 8kHz telephony audio
+    let mut last_sample_f32 = 0.0f32;
+    let mut out_buffer: Vec<f32> = Vec::with_capacity(4096);
+
     let output_stream = output_device
         .build_output_stream(
             &out_config.into(),
             move |data: &mut [f32], _: &_| {
                 if speaker_muted_clone.load(Ordering::Relaxed) {
                     data.fill(0.0);
+                    last_sample_f32 = 0.0;
+                    out_buffer.clear();
                     return;
                 }
 
                 let frames_needed = data.len() / out_channels.max(1);
-                let samples_needed_8k =
-                    ((frames_needed as f64) * 8000.0 / (out_sample_rate as f64)).ceil() as usize;
 
-                let pulled_8k: Vec<i16> = {
-                    let mut lock = play_queue_clone.lock().unwrap();
-                    let take_len = samples_needed_8k.min(lock.len());
-                    lock.drain(0..take_len).collect()
-                };
-
-                // Upsample from 8000 Hz to native sound card sample rate
-                let upsampled = resample_pcm(&pulled_8k, 8000, out_sample_rate);
-
-                for (up_idx, frame) in data.chunks_mut(out_channels).enumerate() {
-                    let sample_f32 = if up_idx < upsampled.len() {
-                        (upsampled[up_idx] as f32) / (i16::MAX as f32)
+                // Initial prebuffer cushion before first playback starts
+                if !is_playing {
+                    let lock = play_queue_clone.lock().unwrap();
+                    if lock.len() >= prebuffer_threshold {
+                        is_playing = true;
                     } else {
-                        0.0
+                        data.fill(0.0);
+                        return;
+                    }
+                }
+
+                // If out_buffer doesn't have enough samples for this frame, pull & resample from play_queue
+                while out_buffer.len() < frames_needed {
+                    let mut lock = play_queue_clone.lock().unwrap();
+                    if lock.is_empty() {
+                        break;
+                    }
+                    let chunk_size = 160.min(lock.len());
+                    let chunk: Vec<i16> = lock.drain(0..chunk_size).collect();
+                    drop(lock);
+
+                    let upsampled = out_resampler.resample(&chunk);
+                    out_buffer.extend(upsampled.iter().map(|&s| (s as f32) / (i16::MAX as f32)));
+                }
+
+                // Output samples from out_buffer to all channels without dropping any samples
+                let available = out_buffer.len().min(frames_needed);
+                for (idx, frame) in data.chunks_mut(out_channels).enumerate() {
+                    let sample_f32 = if idx < available {
+                        last_sample_f32 = out_buffer[idx];
+                        out_buffer[idx]
+                    } else {
+                        // Smooth decay concealment if buffer underrun occurs
+                        last_sample_f32 *= 0.95;
+                        last_sample_f32
                     };
 
                     for ch in frame.iter_mut() {
                         *ch = sample_f32;
                     }
                 }
+
+                // Drain the samples we just played; any remainder stays for next callback!
+                out_buffer.drain(0..available);
             },
             err_fn,
             None,

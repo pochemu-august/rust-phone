@@ -9,6 +9,7 @@ pub fn seq_greater(seq1: u16, seq2: u16) -> bool {
 pub struct JitterBuffer {
     packets: BTreeMap<u16, RtpPacket>,
     next_seq: Option<u16>,
+    last_ssrc: Option<u32>,
     prebuffer_count: usize,
     max_packets: usize,
 }
@@ -18,17 +19,34 @@ impl JitterBuffer {
         Self {
             packets: BTreeMap::new(),
             next_seq: None,
+            last_ssrc: None,
             prebuffer_count,
             max_packets,
         }
     }
 
     pub fn push(&mut self, packet: RtpPacket) {
+        let ssrc = packet.header.ssrc;
         let seq = packet.header.sequence_number;
 
+        // If SSRC changes (e.g. PBX switches between peer RTP and Music on Hold),
+        // reset the jitter buffer to adapt to the new stream immediately.
+        if let Some(prev_ssrc) = self.last_ssrc
+            && prev_ssrc != ssrc
+        {
+            self.packets.clear();
+            self.next_seq = None;
+        }
+        self.last_ssrc = Some(ssrc);
+
         if let Some(expected) = self.next_seq {
-            // Drop old packets that arrived too late
-            if !seq_greater(seq, expected) && seq != expected {
+            let diff = seq.wrapping_sub(expected) as i16;
+            // If delta is huge (sequence jump / stream reset), resync
+            if diff.abs() > 1000 {
+                self.packets.clear();
+                self.next_seq = None;
+            } else if diff < 0 {
+                // Drop late packet
                 return;
             }
         }
